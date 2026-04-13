@@ -41,11 +41,16 @@ export interface Job {
   description: string;
   labourAmount: number;
   partsAmount: number;
+  lineItems?: Array<{
+    name: string;
+    price: number;
+  }>;
   total: number;
   location: string;
   status: 'Draft' | 'Sent' | 'Paid';
   type: 'quote' | 'invoice';
   createdAt: string;
+  paidAt?: string;
 }
 
 export interface UserProfileSettings {
@@ -74,7 +79,9 @@ export interface ProSettings {
   developerMode: boolean;
   theme: 'light' | 'dark';
   disableKwikFixWatermark: boolean;
+  quickSendApp: string;
   userProfile: UserProfileSettings;
   bankDetails: BankDetails;
   paymentIntegrations: PaymentIntegrations;
+  reportStartingIncome: number;
 }

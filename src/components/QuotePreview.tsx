@@ -84,6 +84,12 @@ export default function QuotePreview({ job, previewRef, companyOverride }: Props
             <span className="text-muted-foreground">Parts</span>
             <span className="font-semibold text-foreground">R {job.partsAmount.toFixed(2)}</span>
           </div>
+          {(job.lineItems || []).map((item, idx) => (
+            <div key={`${job.id || 'preview'}-line-item-${idx}`} className="flex justify-between text-sm">
+              <span className="text-muted-foreground">{item.name}</span>
+              <span className="font-semibold text-foreground">R {item.price.toFixed(2)}</span>
+            </div>
+          ))}
           <div className="border-t border-input pt-2 flex justify-between text-xl font-black">
             <span>Total</span>
             <span style={{ color: theme.totalColor }}>R {job.total.toFixed(2)}</span>

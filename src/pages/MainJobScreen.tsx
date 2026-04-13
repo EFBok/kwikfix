@@ -13,6 +13,7 @@ export default function MainJobScreen() {
   const [description, setDescription] = useState('');
   const [labour, setLabour] = useState('');
   const [parts, setParts] = useState('');
+  const [lineItems, setLineItems] = useState<Array<{ name: string; price: string }>>([]);
   const [location, setLocation] = useState('Detecting location...');
   const [isRecording, setIsRecording] = useState(false);
   const [recordingRemainingMs, setRecordingRemainingMs] = useState(MAX_RECORDING_MS);
@@ -23,7 +24,8 @@ export default function MainJobScreen() {
   const recognitionStartedAtRef = useRef<number>(0);
   const stopTimeoutRef = useRef<number | null>(null);
   const countdownIntervalRef = useRef<number | null>(null);
-  const total = (parseFloat(labour) || 0) + (parseFloat(parts) || 0);
+  const lineItemsTotal = lineItems.reduce((sum, item) => sum + (parseFloat(item.price) || 0), 0);
+  const total = (parseFloat(labour) || 0) + (parseFloat(parts) || 0) + lineItemsTotal;
   const recordingProgressPercent = Math.max(0, Math.min(100, ((MAX_RECORDING_MS - recordingRemainingMs) / MAX_RECORDING_MS) * 100));
 
   const extractCustomerNameFromTranscript = (text: string): string | null => {
@@ -216,6 +218,9 @@ export default function MainJobScreen() {
   };
 
   const handleSend = (asInvoice: boolean) => {
+    const normalizedLineItems = lineItems
+      .map(item => ({ name: item.name.trim(), price: parseFloat(item.price) || 0 }))
+      .filter(item => item.name && item.price > 0);
     const job: Job = {
       id: crypto.randomUUID(),
       photo,
@@ -224,6 +229,7 @@ export default function MainJobScreen() {
       description,
       labourAmount: parseFloat(labour) || 0,
       partsAmount: parseFloat(parts) || 0,
+      lineItems: normalizedLineItems,
       total,
       location,
       status: 'Sent',
@@ -242,6 +248,7 @@ export default function MainJobScreen() {
     setDescription('');
     setLabour('');
     setParts('');
+    setLineItems([]);
   };
 
   // After sending — show preview + share
@@ -337,6 +344,51 @@ export default function MainJobScreen() {
             className="w-full h-14 rounded-2xl border border-input bg-card px-4 text-lg font-semibold text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary"
           />
         </div>
+        <div className="rounded-2xl border border-input bg-card p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-sm font-bold text-foreground">Line Items</p>
+            <button
+              onClick={() => setLineItems(prev => [...prev, { name: '', price: '' }])}
+              className="px-3 py-1 rounded-lg bg-muted text-sm font-bold text-foreground"
+            >
+              + Add Item
+            </button>
+          </div>
+          {lineItems.length === 0 ? (
+            <p className="text-xs text-muted-foreground">Add optional items under labour and parts.</p>
+          ) : (
+            <div className="space-y-2">
+              {lineItems.map((item, idx) => (
+                <div key={`line-item-${idx}`} className="grid grid-cols-[1fr_120px_34px] gap-2 items-center">
+                  <input
+                    type="text"
+                    placeholder="Item name"
+                    value={item.name}
+                    onChange={e => setLineItems(prev => prev.map((entry, entryIdx) => entryIdx === idx ? { ...entry, name: e.target.value } : entry))}
+                    className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                  />
+                  <input
+                    type="number"
+                    placeholder="Price"
+                    value={item.price}
+                    onChange={e => setLineItems(prev => prev.map((entry, entryIdx) => entryIdx === idx ? { ...entry, price: e.target.value } : entry))}
+                    className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                  />
+                  <button
+                    onClick={() => setLineItems(prev => prev.filter((_, entryIdx) => entryIdx !== idx))}
+                    className="h-10 rounded-xl bg-destructive/10 text-destructive text-sm font-black"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+              <div className="flex justify-between text-sm font-semibold pt-1">
+                <span className="text-muted-foreground">Line items total</span>
+                <span className="text-foreground">R {lineItemsTotal.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+        </div>
         <div className="text-right text-2xl font-black text-foreground pr-2">
           Total: R {total.toFixed(2)}
         </div>
@@ -351,6 +403,9 @@ export default function MainJobScreen() {
         description: description || 'Job description...',
         labourAmount: parseFloat(labour) || 0,
         partsAmount: parseFloat(parts) || 0,
+        lineItems: lineItems
+          .map(item => ({ name: item.name.trim(), price: parseFloat(item.price) || 0 }))
+          .filter(item => item.name && item.price > 0),
         total,
         location,
         status: 'Draft',

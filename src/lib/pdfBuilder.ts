@@ -174,21 +174,30 @@ export async function buildDocumentPdfBlob(
 
   pdf.setFontSize(11);
   pdf.setTextColor(70, 70, 70);
-  pdf.text('Labour', contentX + 10, totalsY + 24);
-  pdf.text(`R ${job.labourAmount.toFixed(2)}`, pageWidth - marginX - 10, totalsY + 24, { align: 'right' });
-  pdf.text('Parts', contentX + 10, totalsY + 44);
-  pdf.text(`R ${job.partsAmount.toFixed(2)}`, pageWidth - marginX - 10, totalsY + 44, { align: 'right' });
+  let totalsRowY = totalsY + 24;
+  pdf.text('Labour', contentX + 10, totalsRowY);
+  pdf.text(`R ${job.labourAmount.toFixed(2)}`, pageWidth - marginX - 10, totalsRowY, { align: 'right' });
+  totalsRowY += 20;
+  pdf.text('Parts', contentX + 10, totalsRowY);
+  pdf.text(`R ${job.partsAmount.toFixed(2)}`, pageWidth - marginX - 10, totalsRowY, { align: 'right' });
+  (job.lineItems || []).forEach(item => {
+    totalsRowY += 20;
+    pdf.text(item.name, contentX + 10, totalsRowY);
+    pdf.text(`R ${item.price.toFixed(2)}`, pageWidth - marginX - 10, totalsRowY, { align: 'right' });
+  });
 
   pdf.setDrawColor(220, 220, 220);
+  const dividerY = totalsRowY + 14;
   if (templateMode !== 'card') {
-    pdf.line(contentX, totalsY + 58, pageWidth - marginX, totalsY + 58);
+    pdf.line(contentX, dividerY, pageWidth - marginX, dividerY);
   }
   const totalColor = customPalette?.primary ? [primaryR, primaryG, primaryB] : [brandR, brandG, brandB];
   pdf.setTextColor(totalColor[0], totalColor[1], totalColor[2]);
   pdf.setFont(pdfFont, 'bold');
   pdf.setFontSize(15);
-  pdf.text('Total', contentX + 10, totalsY + 82);
-  pdf.text(`R ${job.total.toFixed(2)}`, pageWidth - marginX - 10, totalsY + 82, { align: 'right' });
+  const totalY = dividerY + 24;
+  pdf.text('Total', contentX + 10, totalY);
+  pdf.text(`R ${job.total.toFixed(2)}`, pageWidth - marginX - 10, totalY, { align: 'right' });
 
   const bankLines = [
     proSettings.bankDetails.bankName && `Bank: ${proSettings.bankDetails.bankName}`,

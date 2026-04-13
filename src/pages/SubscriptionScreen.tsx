@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import { getCompany, getJobs, getProSettings, saveCompany, saveProSettings } from '@/store/kwikfix-store';
-import { Company, Job, ProSettings } from '@/types/kwikfix';
+import { AVAILABLE_SHARE_APPS, Company, Job, ProSettings } from '@/types/kwikfix';
 import { generateAiBrandStyle } from '@/lib/brandTemplateAi';
 import { buildDocumentPdfBlob } from '@/lib/pdfBuilder';
 
 type ProOptionKey = 'brand' | 'user' | 'bank' | 'payment' | 'theme';
+type TimelineRange = '1w' | '1m' | '1y';
 
 interface SubscriptionScreenProps {
   onThemeChange?: (theme: 'light' | 'dark') => void;
@@ -15,8 +16,7 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
   const [settings, setSettings] = useState<ProSettings>(getProSettings());
   const [company, setCompany] = useState<Company | null>(getCompany());
   const [brandPrompt, setBrandPrompt] = useState('');
-  const [isEditingBrandStudio, setIsEditingBrandStudio] = useState(false);
-  const [expandedOption, setExpandedOption] = useState<ProOptionKey | null>('brand');
+  const [expandedOption, setExpandedOption] = useState<ProOptionKey | null>(null);
   const [previewPdfUrl, setPreviewPdfUrl] = useState<string | null>(null);
   const [dirtyOptions, setDirtyOptions] = useState<Record<ProOptionKey, boolean>>({
     brand: false,
@@ -32,6 +32,9 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
     payment: false,
     theme: false,
   });
+  const [timelineRange, setTimelineRange] = useState<TimelineRange>('1m');
+  const [startingIncomeDraft, setStartingIncomeDraft] = useState<string>(String(getProSettings().reportStartingIncome ?? 0));
+  const jobs = getJobs();
 
   const previewJob: Job = {
     id: 'preview',
@@ -48,13 +51,20 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
     createdAt: new Date().toISOString(),
   };
 
+  const parseDateForReporting = (value: string) => {
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      const [year, month, day] = value.split('-').map(Number);
+      return new Date(year, month - 1, day, 12, 0, 0, 0);
+    }
+    return new Date(value);
+  };
+
   const monthlyTotals = useMemo(() => {
     const now = new Date();
     const month = now.getMonth();
     const year = now.getFullYear();
-    const jobs = getJobs();
     const monthlyJobs = jobs.filter(job => {
-      const created = new Date(job.createdAt);
+      const created = parseDateForReporting(job.createdAt);
       return created.getMonth() === month && created.getFullYear() === year;
     });
 
@@ -63,11 +73,76 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
       .reduce((sum, job) => sum + job.total, 0);
 
     const totalReceived = monthlyJobs
-      .filter(job => job.type === 'invoice' && job.status === 'Paid')
+      .filter(job => {
+        if (job.type !== 'invoice' || job.status !== 'Paid') return false;
+        const paidDate = parseDateForReporting(job.paidAt || job.createdAt);
+        return paidDate.getMonth() === month && paidDate.getFullYear() === year;
+      })
       .reduce((sum, job) => sum + job.total, 0);
 
     return { totalInvoiced, totalReceived };
-  }, []);
+  }, [jobs]);
+
+  const timelineData = useMemo(() => {
+    const nowDate = new Date();
+    const now = nowDate.getTime();
+    const startDate = new Date(nowDate);
+    if (timelineRange === '1w') {
+      startDate.setDate(nowDate.getDate() - 7);
+    } else if (timelineRange === '1m') {
+      startDate.setDate(1);
+      startDate.setHours(0, 0, 0, 0);
+    } else {
+      startDate.setMonth(0, 1);
+      startDate.setHours(0, 0, 0, 0);
+    }
+    const startTime = startDate.getTime();
+    const startValue = Math.max(0, Number(settings.reportStartingIncome) || 0);
+
+    const paidEvents = jobs
+      .filter(job => job.type === 'invoice' && job.status === 'Paid')
+      .map(job => ({
+        id: job.id,
+        total: job.total,
+        timestamp: parseDateForReporting(job.paidAt || job.createdAt).getTime(),
+      }))
+      .filter(event => event.timestamp >= startTime && event.timestamp <= now)
+      .sort((a, b) => a.timestamp - b.timestamp);
+
+    let runningTotal = startValue;
+    const points: Array<{ xTime: number; value: number; isPaidEvent: boolean }> = [
+      { xTime: startTime, value: runningTotal, isPaidEvent: false },
+    ];
+
+    paidEvents.forEach(event => {
+      runningTotal += event.total;
+      points.push({ xTime: event.timestamp, value: runningTotal, isPaidEvent: true });
+    });
+
+    points.push({ xTime: now, value: runningTotal, isPaidEvent: false });
+
+    return { startTime, endTime: now, points };
+  }, [jobs, timelineRange, settings.reportStartingIncome]);
+
+  const formatXAxisLabel = (time: number) => {
+    const date = new Date(time);
+    if (timelineRange === '1w') return date.toLocaleDateString(undefined, { weekday: 'short' });
+    if (timelineRange === '1m') return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+    return date.toLocaleDateString(undefined, { month: 'short', year: '2-digit' });
+  };
+
+  const buildSmoothPath = (points: Array<{ x: number; y: number }>) => {
+    if (points.length === 0) return '';
+    if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+    let path = `M ${points[0].x} ${points[0].y}`;
+    for (let i = 0; i < points.length - 1; i += 1) {
+      const current = points[i];
+      const next = points[i + 1];
+      const midX = (current.x + next.x) / 2;
+      path += ` Q ${midX} ${current.y}, ${next.x} ${next.y}`;
+    }
+    return path;
+  };
 
   const markOptionDirty = (option: ProOptionKey) => {
     setDirtyOptions(prev => ({ ...prev, [option]: true }));
@@ -135,6 +210,16 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
     setPreviewPdfUrl(url);
   };
 
+  const handleSaveStartingIncome = () => {
+    const parsed = Number(startingIncomeDraft);
+    const normalized = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+    const updatedSettings = { ...settings, reportStartingIncome: normalized };
+    setSettings(updatedSettings);
+    saveProSettings(updatedSettings);
+    setStartingIncomeDraft(String(normalized));
+    toast.success('Starting income updated');
+  };
+
   return (
     <div className="min-h-screen bg-background px-6 py-8 pb-24">
       <div className="max-w-md mx-auto">
@@ -191,111 +276,102 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
                   </button>
                   {expandedOption === 'brand' && company && (
                     <div className="px-3 pb-3 space-y-3">
-                      <button
-                        onClick={() => setIsEditingBrandStudio(prev => !prev)}
-                        className="px-3 py-1.5 rounded-lg bg-muted text-foreground text-xs font-black"
-                      >
-                        {isEditingBrandStudio ? 'Close Edit' : 'Edit'}
-                      </button>
-
-                      {isEditingBrandStudio && (
-                        <div className="space-y-3">
-                          <div className="grid grid-cols-4 gap-2">
-                            {['clean', 'bold', 'modern', 'custom'].map(templateId => (
-                              <button
-                                key={templateId}
-                                onClick={() => {
-                                  setCompany(prev => prev ? { ...prev, template: templateId as Company['template'] } : prev);
-                                  markOptionDirty('brand');
-                                }}
-                                className={`h-9 rounded-lg text-xs font-bold border ${
-                                  company.template === templateId ? 'border-primary bg-accent' : 'border-input'
-                                }`}
-                              >
-                                {templateId}
-                              </button>
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-4 gap-2">
+                          {['clean', 'bold', 'modern', 'custom'].map(templateId => (
+                            <button
+                              key={templateId}
+                              onClick={() => {
+                                setCompany(prev => prev ? { ...prev, template: templateId as Company['template'] } : prev);
+                                markOptionDirty('brand');
+                              }}
+                              className={`h-9 rounded-lg text-xs font-bold border ${
+                                company.template === templateId ? 'border-primary bg-accent' : 'border-input'
+                              }`}
+                            >
+                              {templateId}
+                            </button>
+                          ))}
+                        </div>
+                        <input
+                          type="color"
+                          value={company.brandColor}
+                          onChange={e => {
+                            setCompany(prev => prev ? { ...prev, brandColor: e.target.value } : prev);
+                            markOptionDirty('brand');
+                          }}
+                          className="w-full h-10 rounded-lg border border-input bg-background"
+                        />
+                        <textarea
+                          value={brandPrompt}
+                          onChange={e => {
+                            setBrandPrompt(e.target.value);
+                            markOptionDirty('brand');
+                          }}
+                          rows={3}
+                          placeholder="Describe your brand style (e.g. 'premium, airy spacing, editorial luxury with serif headings')"
+                          className="w-full rounded-xl border border-input bg-background p-3 text-sm"
+                        />
+                        <button
+                          onClick={handleGenerateBrandStyle}
+                          className="w-full h-10 rounded-xl bg-secondary text-secondary-foreground text-sm font-black"
+                        >
+                          Generate AI Custom Template
+                        </button>
+                        {company.customBrandStyle && (
+                          <p className="text-xs text-muted-foreground">
+                            Font: {company.customBrandStyle.fontFamily} | Spacing: {company.customBrandStyle.spacing} | Style: {company.customBrandStyle.style} | Layout: {company.customBrandStyle.layout}
+                          </p>
+                        )}
+                        {company.customBrandStyle?.palette && (
+                          <div className="flex gap-2">
+                            {Object.entries(company.customBrandStyle.palette).map(([key, value]) => (
+                              <div key={key} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                <span className="w-3 h-3 rounded-full border border-input" style={{ backgroundColor: value }} />
+                                {key}
+                              </div>
                             ))}
                           </div>
-                          <input
-                            type="color"
-                            value={company.brandColor}
-                            onChange={e => {
-                              setCompany(prev => prev ? { ...prev, brandColor: e.target.value } : prev);
-                              markOptionDirty('brand');
-                            }}
-                            className="w-full h-10 rounded-lg border border-input bg-background"
-                          />
-                          <textarea
-                            value={brandPrompt}
-                            onChange={e => {
-                              setBrandPrompt(e.target.value);
-                              markOptionDirty('brand');
-                            }}
-                            rows={3}
-                            placeholder="Describe your brand style (e.g. 'premium, airy spacing, editorial luxury with serif headings')"
-                            className="w-full rounded-xl border border-input bg-background p-3 text-sm"
-                          />
-                          <button
-                            onClick={handleGenerateBrandStyle}
-                            className="w-full h-10 rounded-xl bg-secondary text-secondary-foreground text-sm font-black"
-                          >
-                            Generate AI Custom Template
-                          </button>
-                          {company.customBrandStyle && (
-                            <p className="text-xs text-muted-foreground">
-                              Font: {company.customBrandStyle.fontFamily} | Spacing: {company.customBrandStyle.spacing} | Style: {company.customBrandStyle.style} | Layout: {company.customBrandStyle.layout}
-                            </p>
-                          )}
-                          {company.customBrandStyle?.palette && (
-                            <div className="flex gap-2">
-                              {Object.entries(company.customBrandStyle.palette).map(([key, value]) => (
-                                <div key={key} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                                  <span className="w-3 h-3 rounded-full border border-input" style={{ backgroundColor: value }} />
-                                  {key}
-                                </div>
-                              ))}
+                        )}
+                        <div className="rounded-xl border border-input bg-background p-2 space-y-2">
+                          <div className="flex justify-between items-center">
+                            <p className="text-xs font-bold text-muted-foreground">Live template preview</p>
+                            <button
+                              onClick={handleRefreshPdfPreview}
+                              className="px-2 py-1 rounded-md bg-muted text-xs font-bold"
+                            >
+                              Refresh Preview
+                            </button>
+                          </div>
+                          {previewPdfUrl ? (
+                            <iframe
+                              src={previewPdfUrl}
+                              title="PDF Preview"
+                              className="w-full h-[420px] rounded-lg border border-input bg-white"
+                            />
+                          ) : (
+                            <div className="h-28 rounded-lg border border-dashed border-input flex items-center justify-center text-sm text-muted-foreground">
+                              Click Refresh Preview to render PDF example
                             </div>
                           )}
-                          <div className="rounded-xl border border-input bg-background p-2 space-y-2">
-                            <div className="flex justify-between items-center">
-                              <p className="text-xs font-bold text-muted-foreground">Live template preview</p>
-                              <button
-                                onClick={handleRefreshPdfPreview}
-                                className="px-2 py-1 rounded-md bg-muted text-xs font-bold"
-                              >
-                                Refresh Preview
-                              </button>
-                            </div>
-                            {previewPdfUrl ? (
-                              <iframe
-                                src={previewPdfUrl}
-                                title="PDF Preview"
-                                className="w-full h-[420px] rounded-lg border border-input bg-white"
-                              />
-                            ) : (
-                              <div className="h-28 rounded-lg border border-dashed border-input flex items-center justify-center text-sm text-muted-foreground">
-                                Click Refresh Preview to render PDF example
-                              </div>
-                            )}
-                          </div>
-                          <div className="rounded-xl border border-input p-3">
-                            <label className="flex items-center justify-between">
-                              <div>
-                                <p className="text-sm font-black text-foreground">KwikFix watermark on PDF</p>
-                                <p className="text-xs text-muted-foreground">Show KwikFix logo at bottom of invoices/quotes</p>
-                              </div>
-                              <input
-                                type="checkbox"
-                                checked={!settings.disableKwikFixWatermark}
-                                onChange={e => {
-                                  setSettings(prev => ({ ...prev, disableKwikFixWatermark: !e.target.checked }));
-                                  markOptionDirty('brand');
-                                }}
-                              />
-                            </label>
-                          </div>
                         </div>
-                      )}
+                        <div className="rounded-xl border border-input p-3">
+                          <label className="flex items-center justify-between">
+                            <div>
+                              <p className="text-sm font-black text-foreground">KwikFix watermark on PDF</p>
+                              <p className="text-xs text-muted-foreground">Show KwikFix logo at bottom of invoices/quotes</p>
+                            </div>
+                            <input
+                              type="checkbox"
+                              checked={!settings.disableKwikFixWatermark}
+                              onChange={e => {
+                                setSettings(prev => ({ ...prev, disableKwikFixWatermark: !e.target.checked }));
+                                markOptionDirty('brand');
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
 
                       <button
                         onClick={handleSaveBrandStudio}
@@ -348,6 +424,23 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
                         placeholder="Phone number"
                         className="w-full h-11 rounded-xl border border-input bg-background px-3 text-sm"
                       />
+                      <div className="space-y-1">
+                        <p className="text-xs font-semibold text-muted-foreground">Quick send option</p>
+                        <select
+                          value={settings.quickSendApp}
+                          onChange={e => {
+                            setSettings(prev => ({ ...prev, quickSendApp: e.target.value }));
+                            markOptionDirty('user');
+                          }}
+                          className="w-full h-11 rounded-xl border border-input bg-background px-3 text-sm"
+                        >
+                          {AVAILABLE_SHARE_APPS.map(app => (
+                            <option key={app.id} value={app.id}>
+                              {app.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                       <button
                         onClick={() => handleSaveSettingsOption('user', 'User information saved')}
                         className={`w-full h-10 rounded-xl text-sm font-black ${
@@ -543,7 +636,7 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
 
               <div>
                 <p className="text-base font-black text-foreground mb-2">Monthly Report</p>
-                <div className="rounded-xl border border-input bg-background p-3 space-y-2">
+                <div className="rounded-xl border border-input bg-background p-3 space-y-3">
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Total invoiced</span>
                     <span className="text-lg font-black text-foreground">R {monthlyTotals.totalInvoiced.toFixed(2)}</span>
@@ -551,6 +644,89 @@ export default function SubscriptionScreen({ onThemeChange }: SubscriptionScreen
                   <div className="flex items-center justify-between">
                     <span className="text-sm text-muted-foreground">Received income</span>
                     <span className="text-lg font-black text-secondary">R {monthlyTotals.totalReceived.toFixed(2)}</span>
+                  </div>
+
+                  <div className="pt-1 border-t border-input">
+                    <p className="text-xs font-bold text-muted-foreground mb-2">Incoming invoices timeline</p>
+                    <div className="grid grid-cols-3 gap-2 mb-3">
+                      {([
+                        { key: '1w', label: '1 Week' },
+                        { key: '1m', label: '1 Month' },
+                        { key: '1y', label: '1 Year' },
+                      ] as Array<{ key: TimelineRange; label: string }>).map(option => (
+                        <button
+                          key={option.key}
+                          onClick={() => setTimelineRange(option.key)}
+                          className={`h-9 rounded-lg text-xs font-bold border ${
+                            timelineRange === option.key ? 'border-primary bg-accent text-foreground' : 'border-input'
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="rounded-xl border border-input bg-card p-3">
+                      {(() => {
+                        const chartWidth = 360;
+                        const chartHeight = 180;
+                        const padding = { top: 12, right: 8, bottom: 22, left: 42 };
+                        const plotWidth = chartWidth - padding.left - padding.right;
+                        const plotHeight = chartHeight - padding.top - padding.bottom;
+
+                        const maxValue = Math.max(...timelineData.points.map(point => point.value), 1);
+                        const yMax = Math.max(1, Math.ceil(maxValue * 1.1));
+                        const timeSpan = Math.max(1, timelineData.endTime - timelineData.startTime);
+
+                        const chartPoints = timelineData.points.map(point => ({
+                          x: padding.left + ((point.xTime - timelineData.startTime) / timeSpan) * plotWidth,
+                          y: padding.top + (1 - point.value / yMax) * plotHeight,
+                          isPaidEvent: point.isPaidEvent,
+                        }));
+
+                        const smoothPath = buildSmoothPath(chartPoints.map(point => ({ x: point.x, y: point.y })));
+                        const paidDots = chartPoints.filter(point => point.isPaidEvent);
+
+                        return (
+                          <svg viewBox={`0 0 ${chartWidth} ${chartHeight}`} className="w-full h-48">
+                            <line x1={padding.left} y1={padding.top} x2={padding.left} y2={padding.top + plotHeight} stroke="hsl(var(--muted-foreground))" strokeWidth="1" />
+                            <line x1={padding.left} y1={padding.top + plotHeight} x2={padding.left + plotWidth} y2={padding.top + plotHeight} stroke="hsl(var(--muted-foreground))" strokeWidth="1" />
+                            <text x={6} y={padding.top + plotHeight + 2} fontSize="10" fill="hsl(var(--muted-foreground))">R 0</text>
+                            <text x={6} y={padding.top + 3} fontSize="10" fill="hsl(var(--muted-foreground))">R {yMax.toFixed(0)}</text>
+                            <path d={smoothPath} fill="none" stroke="hsl(var(--secondary))" strokeWidth="3" strokeLinecap="round" />
+                            {paidDots.map((dot, idx) => (
+                              <circle key={`dot-${idx}`} cx={dot.x} cy={dot.y} r="3.2" fill="hsl(var(--primary))" />
+                            ))}
+                            <text x={padding.left} y={chartHeight - 6} fontSize="10" fill="hsl(var(--muted-foreground))">
+                              {formatXAxisLabel(timelineData.startTime)}
+                            </text>
+                            <text x={padding.left + plotWidth - 46} y={chartHeight - 6} fontSize="10" fill="hsl(var(--muted-foreground))">
+                              {formatXAxisLabel(timelineData.endTime)}
+                            </text>
+                          </svg>
+                        );
+                      })()}
+                      <p className="text-[11px] text-muted-foreground mt-1">
+                        Dots show when invoices were marked paid. Line tracks cumulative income in the selected period.
+                      </p>
+                    </div>
+
+                    <div className="mt-3 grid grid-cols-[1fr_auto] gap-2">
+                      <input
+                        type="number"
+                        min={0}
+                        value={startingIncomeDraft}
+                        onChange={e => setStartingIncomeDraft(e.target.value)}
+                        placeholder="Starting income for late adoption"
+                        className="h-10 rounded-xl border border-input bg-background px-3 text-sm"
+                      />
+                      <button
+                        onClick={handleSaveStartingIncome}
+                        className="h-10 px-3 rounded-xl bg-primary text-primary-foreground text-sm font-black"
+                      >
+                        Save
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

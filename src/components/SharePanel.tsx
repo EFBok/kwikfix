@@ -11,12 +11,14 @@ interface Props {
 
 function buildShareText(job: Job, companyName: string): string {
   const docType = (job.type || 'quote') === 'invoice' ? 'Invoice' : 'Quote';
+  const lineItemsText = (job.lineItems || []).map(item => `${item.name}: R ${item.price.toFixed(2)}`);
   return [
     `${docType} from ${companyName}`,
     `Customer: ${job.customerName}`,
     `Description: ${job.description}`,
     `Labour: R ${job.labourAmount.toFixed(2)}`,
     `Parts: R ${job.partsAmount.toFixed(2)}`,
+    ...lineItemsText,
     `Total: R ${job.total.toFixed(2)}`,
     job.location ? `Location: ${job.location}` : '',
     '',
@@ -26,6 +28,7 @@ function buildShareText(job: Job, companyName: string): string {
 
 export default function SharePanel({ job, onClose }: Props) {
   const company = getCompany();
+  const proSettings = getProSettings();
   const companyData = company || {
     logo: null,
     name: 'KwikFix',
@@ -34,6 +37,7 @@ export default function SharePanel({ job, onClose }: Props) {
   };
   const companyName = companyData.name;
   const enabledApps = company?.shareApps || ['whatsapp', 'email'];
+  const quickSendAppId = proSettings.quickSendApp || 'whatsapp';
   const shareText = buildShareText(job, companyName);
   const docType = (job.type || 'quote') === 'invoice' ? 'Invoice' : 'Quote';
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
@@ -116,22 +120,37 @@ export default function SharePanel({ job, onClose }: Props) {
   };
 
   const activeApps = AVAILABLE_SHARE_APPS.filter(a => enabledApps.includes(a.id));
+  const quickSendApp = activeApps.find(a => a.id === quickSendAppId) || activeApps[0];
+  const secondaryApps = activeApps.filter(a => a.id !== quickSendApp?.id);
 
   return (
     <div className="space-y-3">
-      {/* App-specific buttons */}
-      <div className="grid grid-cols-2 gap-3">
-        {activeApps.map(app => (
-          <button
-            key={app.id}
-            onClick={() => handleAppShare(app)}
-            className="h-16 rounded-2xl bg-card border border-input flex items-center justify-center gap-2 text-lg font-bold text-foreground active:scale-[0.96] transition-transform"
-          >
-            <span className="text-2xl">{app.icon}</span>
-            {app.label}
-          </button>
-        ))}
-      </div>
+      {/* Quick send button */}
+      {quickSendApp && (
+        <button
+          onClick={() => handleAppShare(quickSendApp)}
+          className="w-full h-14 rounded-2xl bg-secondary text-secondary-foreground text-lg font-black active:scale-[0.96] transition-transform flex items-center justify-center gap-2"
+        >
+          <span className="text-xl">{quickSendApp.icon}</span>
+          {isGeneratingPdf ? 'Generating PDF...' : `Quick Send via ${quickSendApp.label}`}
+        </button>
+      )}
+
+      {/* Other app buttons */}
+      {secondaryApps.length > 0 && (
+        <div className="grid grid-cols-2 gap-3">
+          {secondaryApps.map(app => (
+            <button
+              key={app.id}
+              onClick={() => handleAppShare(app)}
+              className="h-16 rounded-2xl bg-card border border-input flex items-center justify-center gap-2 text-lg font-bold text-foreground active:scale-[0.96] transition-transform"
+            >
+              <span className="text-2xl">{app.icon}</span>
+              {app.label}
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* Generic share / copy */}
       <button
